@@ -107,7 +107,7 @@ def _voice_turn(session_id, audio):
             reply = (
                 _call_model(agent.confirm, session, answer)
                 if answer is not None
-                else {"text": "", "pending": agent._describe(session.pending)}
+                else {"text": "", "pending": agent._describe(session.pending), "actions": []}
             )
     answered = time.perf_counter()
 

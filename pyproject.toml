@@ -1,7 +1,7 @@
 [project]
 name = "voice-support-agent"
 version = "0.1.0"
-description = "Customer support agent with a hand-written tool-calling loop and a fake CRM"
+description = "Customer support agent with a framework-free tool-calling loop and a fake CRM"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.162.0",

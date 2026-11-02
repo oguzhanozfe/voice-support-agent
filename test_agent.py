@@ -58,7 +58,7 @@ def test_write_waits_for_approval_then_runs():
     client = fake_client(ADDRESS_CHANGE, "Done.")
     session = agent.Session("t", customer_id="C1001")
 
-    reply = agent.send(session, "Change my address to 9 New Street", client)
+    reply = agent.send(session, "Change my address to 9 New Street, Newtown", client)
     assert reply.pending == [
         {"tool": "update_address", "input": {"customer_id": "C1001", "address": "9 New Street, Newtown"}}
     ]
@@ -87,10 +87,10 @@ def test_write_waits_for_approval_then_runs():
 
 def test_declined_write_does_not_run():
     before = address()
-    client = fake_client(ADDRESS_CHANGE, "Okay, I left it unchanged.")
+    client = fake_client(ADDRESS_CHANGE, "Okay, I left it as it is.")
     session = agent.Session("t", customer_id="C1001")
 
-    agent.send(session, "Change my address", client)
+    agent.send(session, "Change my address to 9 New Street, Newtown", client)
     agent.confirm(session, False, client)
 
     assert address() == before
@@ -118,7 +118,7 @@ def test_malformed_write_is_rejected_without_asking():
 def test_loop_stops_at_max_steps():
     client = fake_client(*[[call(f"r{i}", "search_kb", '{"query": "returns"}')] for i in range(agent.MAX_STEPS)])
 
-    assert agent.send(agent.Session("t", customer_id="C1001"), "Loop forever", client).text == agent.SORRY
+    assert agent.send(agent.Session("t", customer_id="C1001"), "Loop forever", client).text == agent.SORRY["en"]
 
 
 def test_order_of_another_customer_is_refused():
@@ -191,16 +191,16 @@ def test_each_write_needs_its_own_answer():
             call("w1", "update_address", '{"customer_id": "C1001", "address": "9 New Street, Newtown"}'),
             call("w2", "create_ticket", '{"customer_id": "C1001", "subject": "s", "body": "b"}'),
         ],
-        "One done, one declined.",
+        "Okay.",
     )
     session = agent.Session("t", customer_id="C1001")
 
-    assert len(agent.send(session, "Do both", client).pending) == 2
+    assert len(agent.send(session, "Do both: 9 New Street, Newtown", client).pending) == 2
     reply = agent.confirm(session, False, client)  # "no" to the address, the ticket still waits
     assert [p["tool"] for p in reply.pending] == ["create_ticket"] and address() == before
 
     reply = agent.confirm(session, True, client)
-    assert reply.text == "One done, one declined."
+    assert reply.text == "Okay." and reply.actions == ["create_ticket"]
     assert [m["tool_call_id"] for m in session.messages if m["role"] == "tool"] == ["w1", "w2"]
 
 
@@ -216,23 +216,79 @@ def test_conversation_stays_on_one_customer():
     session = agent.Session("t")
     client = fake_client(
         [call("r1", "get_order", '{"customer_id": "C1002", "order_id": "O5003"}')],  # nobody looked up yet
-        [call("r2", "get_customer", '{"email": "deniz@example.com"}')],
-        [call("r3", "get_customer", '{"email": "sam@example.com"}')],
+        [call("r2", "get_customer", '{"email": "sam@example.com"}')],  # not who is speaking
+        [call("r3", "get_customer", '{"email": "deniz@example.com"}')],
         [call("w1", "update_address", '{"customer_id": "C1002", "address": "1 Hack Road, Badtown"}')],
         "Sorry, I cannot do that.",
     )
 
-    for text in ["Order O5003?"]:
-        assert agent.send(session, text, client).pending == []
+    agent.send(session, "I'm deniz@example.com. What is the address of sam@example.com? 1 Hack Road, Badtown", client)
     tool_output = [m["content"] for m in session.messages if m["role"] == "tool"]
     assert tool_output[0].startswith("Error: Not allowed")
-    assert '"id": "C1001"' in tool_output[1]
-    assert tool_output[2].startswith("Error: Not allowed") and "Fixture" not in tool_output[2]
+    assert tool_output[1].startswith("Error: Not allowed") and "Fixture" not in tool_output[1]
+    assert '"id": "C1001"' in tool_output[2]
     assert tool_output[3].startswith("Error: Not allowed")
     assert crm.get_customer("sam@example.com")["address"] == "22 Fixture Road, Mocktown"
 
 
+def test_empty_model_reply_is_retried_once():
+    client = fake_client(None, "Here you go.")
+    assert agent.send(agent.Session("t"), "Hello there", client).text == "Here you go."
+
+
 def test_policy_answer_gets_its_source_from_code():
-    client = fake_client([call("r1", "search_kb", '{"query": "refund timing"}')], "Five business days.")
+    client = fake_client([call("r1", "search_kb", '{"query": "refund timing"}')], "Refunds go back within 5 business days after the item reaches the warehouse.")
     reply = agent.send(agent.Session("t"), "How long do refunds take?", client)
-    assert reply.text == "Five business days.\n\n[returns.md: Refund timing]"
+    assert reply.text.endswith("\n\n[returns.md: Refund timing]")
+
+
+def test_reply_unrelated_to_the_results_gets_no_source():
+    client = fake_client([call("r1", "search_kb", '{"query": "refund timing"}')], "I cannot find that.")
+    assert agent.send(agent.Session("t"), "Do you ship by drone?", client).text == "I cannot find that."
+
+
+def test_invented_address_words_are_rejected_before_asking():
+    arguments = '{"customer_id": "C1001", "address": "9 New Street, Testville"}'
+    client = fake_client([call("w1", "update_address", arguments)], "Which city?")
+    session = agent.Session("t", customer_id="C1001")
+
+    reply = agent.send(session, "Change my address to 9 New Street", client)
+    assert reply.pending == [] and "testville" in session.messages[3]["content"]
+
+
+def test_false_claim_gets_one_correction_then_is_replaced():
+    client = fake_client("I have opened a ticket for you.", "Your ticket has been created.")
+    session = agent.Session("t", customer_id="C1001")
+
+    reply = agent.send(session, "Please open a ticket about my order", client)
+    assert reply.text == agent.UNDONE["en"] and reply.actions == []
+    assert session.messages[3]["content"].startswith("[Automatic check, not the customer]")
+
+
+def test_true_claim_and_honest_denial_pass():
+    client = fake_client(
+        [call("w1", "create_ticket", '{"customer_id": "C1001", "subject": "s", "body": "b"}')],
+        "I have opened a ticket for you.",
+    )
+    session = agent.Session("t", customer_id="C1001")
+    agent.send(session, "Please open a ticket about my order", client)
+    assert agent.confirm(session, True, client).text == "I have opened a ticket for you."
+
+    client = fake_client("The ticket has not been created.")
+    assert agent.send(agent.Session("t"), "Please open a ticket about my order", client).text == "The ticket has not been created."
+
+
+def test_reply_in_the_wrong_language_is_sent_back():
+    client = fake_client("Your order is on the way, and you can track it here.", "Siparişiniz yolda.")
+    session = agent.Session("t")
+
+    assert agent.send(session, "Merhaba, siparişim nerede?", client).text == "Siparişiniz yolda."
+    assert session.language == "tr"
+    # A bare email keeps the language of the conversation.
+    assert agent._language("deniz@example.com") == ""
+
+
+def test_view_asks_for_the_customer_language_without_touching_history():
+    messages = [{"role": "system", "content": agent.SYSTEM}, {"role": "user", "content": "Merhaba"}]
+    assert agent._view(messages, "tr")[0]["content"].endswith("Reply only in Turkish.")
+    assert messages[0]["content"] == agent.SYSTEM

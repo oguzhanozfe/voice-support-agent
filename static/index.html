@@ -78,8 +78,11 @@ function busy(on) {
   $("mic").disabled = on && !recorder;
 }
 
+const DONE = { update_address: "Address changed", create_ticket: "Ticket created", escalate_to_human: "Queued for a human agent" };
+
 function show(reply) {
   add(reply.text);
+  for (const tool of reply.actions) add(`Done: ${DONE[tool] || tool}`, "note");
   const next = reply.pending[0];
   $("confirm").hidden = !next;
   if (next) $("pending").textContent = `${next.tool}\n${JSON.stringify(next.input, null, 2)}`;
