@@ -1,9 +1,12 @@
-"""Fake CRM on SQLite. Every record here is synthetic."""
+"""Fake CRM and knowledge base on SQLite. Every record here is synthetic."""
+import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
 DB_PATH = Path("crm.db")
+KB_DIR = Path(__file__).parent / "kb"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
@@ -17,9 +20,10 @@ CREATE TABLE IF NOT EXISTS tickets (
     id INTEGER PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id),
     subject TEXT NOT NULL, body TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS escalations (
-    id INTEGER PRIMARY KEY, reason TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS handoffs (
+    id INTEGER PRIMARY KEY, reason TEXT NOT NULL, summary TEXT NOT NULL, transcript TEXT NOT NULL
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS kb USING fts5(source UNINDEXED, title, body, tokenize='porter');
 """
 
 CUSTOMERS = [
@@ -33,6 +37,10 @@ ORDERS = [
     ("O5003", "C1002", "Desk lamp", "delivered", 34.00),
     ("O5004", "C1003", "Mechanical keyboard", "processing", 120.00),
 ]
+
+
+# Without this, "how long do refunds take" ranks on "how", "long" and "take".
+STOP_WORDS = set("a an and are can do does for how i in is it long many much my of on or take the to what when where why with you your".split())
 
 
 @contextmanager
@@ -52,6 +60,29 @@ def init_db():
         conn.executescript(SCHEMA)
         conn.executemany("INSERT OR IGNORE INTO customers VALUES (?, ?, ?, ?)", CUSTOMERS)
         conn.executemany("INSERT OR IGNORE INTO orders VALUES (?, ?, ?, ?, ?)", ORDERS)
+        conn.execute("DELETE FROM kb")
+        conn.executemany("INSERT INTO kb VALUES (?, ?, ?)", _kb_sections())
+
+
+def _kb_sections():
+    for path in sorted(KB_DIR.glob("*.md")):
+        for section in path.read_text(encoding="utf-8").split("\n## ")[1:]:
+            title, _, body = section.partition("\n")
+            yield f"{path.name}: {title.strip()}", title.strip(), body.strip()
+
+
+def search_kb(query):
+    # Quote every word so customer text cannot be read as FTS5 query syntax.
+    words = re.findall(r"\w+", query)
+    if not words:
+        raise ValueError("Search query must contain words")
+    words = [w for w in words if w.lower() not in STOP_WORDS] or words
+    match = " OR ".join(f'"{w}"' for w in words)
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT source, body FROM kb WHERE kb MATCH ? ORDER BY bm25(kb, 0, 5, 1) LIMIT 3", (match,)
+        ).fetchall()
+    return [{"cite": f"[{r['source']}]", "text": r["body"]} for r in rows]
 
 
 def get_customer(email):
@@ -62,17 +93,26 @@ def get_customer(email):
     return dict(row)
 
 
-def get_order(order_id):
+def get_order(customer_id, order_id):
     with _db() as conn:
-        row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM orders WHERE id = ? AND customer_id = ?", (order_id, customer_id)
+        ).fetchone()
     if row is None:
-        raise LookupError(f"No order with id {order_id}")
+        # The same answer for "missing" and "someone else's", so ids cannot be probed.
+        raise LookupError(f"Customer {customer_id} has no order {order_id}")
     return dict(row)
 
 
+def check_address(address):
+    # ponytail: a shape check, not real validation. A postal address API would replace it.
+    street, _, city = address.partition(",")
+    if not (re.search(r"\d", street) and len(street.split()) >= 2 and city.strip()):
+        raise ValueError("Address is incomplete: ask the customer for the street, house number and city")
+
+
 def update_address(customer_id, address):
-    if not address.strip():
-        raise ValueError("Address must not be empty")
+    check_address(address)
     with _db() as conn:
         updated = conn.execute(
             "UPDATE customers SET address = ? WHERE id = ?", (address.strip(), customer_id)
@@ -94,7 +134,16 @@ def create_ticket(customer_id, subject, body):
     return {"ticket_id": ticket_id}
 
 
-def escalate_to_human(reason):
+def escalate_to_human(reason, summary, transcript):
     with _db() as conn:
-        escalation_id = conn.execute("INSERT INTO escalations (reason) VALUES (?)", (reason,)).lastrowid
-    return {"escalation_id": escalation_id, "status": "queued for a human agent"}
+        handoff_id = conn.execute(
+            "INSERT INTO handoffs (reason, summary, transcript) VALUES (?, ?, ?)",
+            (reason, summary, json.dumps(transcript, ensure_ascii=False)),
+        ).lastrowid
+    return {"handoff_id": handoff_id, "status": "queued for a human agent"}
+
+
+def list_handoffs():
+    with _db() as conn:
+        rows = conn.execute("SELECT * FROM handoffs ORDER BY id DESC").fetchall()
+    return [{**dict(r), "transcript": json.loads(r["transcript"])} for r in rows]

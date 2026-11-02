@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support agent demo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f5f2; --panel: #fff; --text: #1d1d1b; --muted: #65635c; --line: #dcd9d0;
+    --accent: #1f5f8b; --accent-text: #fff; --customer: #e4eef5; --warn: #fff4d6; --warn-line: #d9b44a; --stop: #a4342a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171716; --panel: #222220; --text: #ecebe6; --muted: #a5a39b; --line: #3a3936;
+      --accent: #7db8df; --accent-text: #10222e; --customer: #24384a; --warn: #3b3218; --warn-line: #8f7730; --stop: #ef8f84;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 680px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+  h1 { font-size: 1.2rem; margin: 0; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: .9rem; }
+  #chat { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 0; list-style: none; }
+  #chat li { max-width: 85%; padding: 8px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+  #chat li.customer { align-self: flex-end; background: var(--customer); }
+  #chat li.note { align-self: center; max-width: 100%; background: none; border: 0; color: var(--muted); font-size: .85rem; padding: 0; }
+  #confirm { background: var(--warn); border: 1px solid var(--warn-line); border-radius: 10px; padding: 12px; }
+  #confirm h2 { font-size: 1rem; margin: 0 0 4px; }
+  #confirm pre { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 10px 12px; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  button { padding: 10px 14px; font: inherit; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  button.quiet { background: none; color: var(--accent); }
+  button.stop { background: var(--stop); border-color: var(--stop); color: var(--panel); }
+  button:disabled { opacity: .55; cursor: wait; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Support agent demo</h1>
+    <p>Synthetic data. Try deniz@example.com and order O5001.</p>
+  </header>
+  <ul id="chat" aria-live="polite"></ul>
+  <section id="confirm" hidden aria-live="assertive">
+    <h2>Confirm this change</h2>
+    <pre id="pending"></pre>
+    <div class="row">
+      <button id="approve">Approve</button>
+      <button id="decline" class="quiet">Decline</button>
+    </div>
+  </section>
+  <form id="form" class="row">
+    <input id="text" aria-label="Your message" placeholder="Type a message" maxlength="2000" autocomplete="off">
+    <button id="send">Send</button>
+    <button id="mic" type="button" class="quiet">Speak</button>
+  </form>
+</main>
+<script>
+const session = crypto.randomUUID();
+const $ = (id) => document.getElementById(id);
+let recorder = null;
+
+function add(text, kind = "") {
+  if (!text) return;
+  const li = document.createElement("li");
+  li.textContent = text.replaceAll("**", "");
+  li.className = kind;
+  $("chat").append(li);
+  li.scrollIntoView({ block: "end" });
+}
+
+function busy(on) {
+  for (const id of ["send", "approve", "decline"]) $(id).disabled = on;
+  $("mic").disabled = on && !recorder;
+}
+
+function show(reply) {
+  add(reply.text);
+  const next = reply.pending[0];
+  $("confirm").hidden = !next;
+  if (next) $("pending").textContent = `${next.tool}\n${JSON.stringify(next.input, null, 2)}`;
+}
+
+async function call(path, options) {
+  busy(true);
+  try {
+    const response = await fetch(path, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || response.statusText);
+    return body;
+  } catch (error) {
+    add(`Error: ${error.message}`, "note");
+    return null;
+  } finally {
+    busy(false);
+  }
+}
+
+const json = (body) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = $("text").value.trim();
+  if (!message || !$("confirm").hidden) return;
+  $("text").value = "";
+  add(message, "customer");
+  const reply = await call(`/chat/${session}`, json({ message }));
+  if (reply) show(reply);
+});
+
+async function answer(approved) {
+  add(approved ? "Approved" : "Declined", "note");
+  const reply = await call(`/chat/${session}/confirm`, json({ approved }));
+  if (reply) show(reply);
+}
+$("approve").addEventListener("click", () => answer(true));
+$("decline").addEventListener("click", () => answer(false));
+
+$("mic").addEventListener("click", async () => {
+  if (recorder) return recorder.stop();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return add("Microphone is not available.", "note");
+  }
+  const chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = (event) => chunks.push(event.data);
+  recorder.onstop = async () => {
+    stream.getTracks().forEach((track) => track.stop());
+    recorder = null;
+    $("mic").textContent = "Speak";
+    $("mic").className = "quiet";
+    const reply = await call(`/voice/${session}`, { method: "POST", body: new Blob(chunks) });
+    if (!reply) return;
+    add(reply.transcript, "customer");
+    show(reply);
+    const t = reply.timings;
+    add(`speech-to-text ${t.stt_ms} ms, agent ${t.agent_ms} ms, text-to-speech ${t.tts_ms} ms`, "note");
+    new Audio(`data:audio/wav;base64,${reply.audio}`).play();
+  };
+  recorder.start();
+  $("mic").textContent = "Stop";
+  $("mic").className = "stop";
+});
+</script>
+</body>
+</html>
