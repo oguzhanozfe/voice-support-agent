@@ -11,7 +11,7 @@ flowchart LR
     STT --> API
     API --> L{Tool loop<br>agent.py}
     L <--> M[Model<br>OpenAI-compatible]
-    L -->|read| DB[(SQLite<br>CRM + FTS5 KB)]
+    L -->|read| DB[(SQLite<br>CRM + hybrid KB search)]
     L -->|write| G{Customer<br>confirms?}
     G -->|yes| DB
     G -->|no| L
@@ -22,21 +22,33 @@ flowchart LR
 
 ## Results
 
-Measured on an Apple Silicon Mac with `qwen3.5:4b` through Ollama, one run per scenario.
+Measured on an Apple Silicon Mac with `qwen3.5:4b` through Ollama, one run per scenario, all data synthetic.
 
-| Scenario set | Who wrote it | Task completion | False action claims | Wrong language | Report |
-|---|---|---|---|---|---|
-| Independent set 2 (20) | OpenAI Codex, without seeing the code | **16/20 (80%)** | 0/20 | 0/20 | [HOLDOUT-2](eval/HOLDOUT-2.md) |
-| Independent set 1 (20) | OpenAI Codex, flawed brief | 9/20 (45%) | 2/20 | 0/20 | [HOLDOUT-1](eval/HOLDOUT-1.md) |
-| Development set (47) | Written alongside the code | 43/47 (91%) | 1/47 | 0/47 | [REPORT](eval/REPORT.md) |
+**Latest score on unseen scenarios: 26/30 (87%).** It has not reached 90% on a set the code had not seen.
 
-Trust the independent sets over the development set. The code was fixed against the development set, and two runs of the same code on it scored 45/47 and 43/47, so a small model varies by a few points from run to run.
+Each row below was written by another AI model that never saw the code, then run once on frozen code. The failures were read only afterwards, general fixes followed, and the next set was new.
 
-Set 1 is published as it ran, with nothing changed. Many of its 11 failures came from the brief it was given: it did not give the knowledge base file names, and it let scenarios forbid a tool that has to be called before the customer can decline. Some failures were real, such as a needless handoff and a missing return fee. Set 2 used a corrected brief and the same code, and it was run once. No human has written a scenario set yet. To add one, use the same format and run `uv run python eval/run.py --scenarios your.json --name YOURS`.
+| Unseen set | Written by | Task completion | Report |
+|---|---|---|---|
+| 7 (30), latest | Gemini | **26/30 (87%)** | [HOLDOUT-7](eval/HOLDOUT-7.md) |
+| 6 (30) | Gemini | 25/30 (83%) | [HOLDOUT-6](eval/HOLDOUT-6.md) |
+| 5 (30) | Gemini | 23/30 (77%) | [HOLDOUT-5](eval/HOLDOUT-5.md) |
+| 4 (30) | OpenAI Codex | 22/30 (73%) | [HOLDOUT-4](eval/HOLDOUT-4.md) |
+| 2 (20) | OpenAI Codex | 16/20 (80%) | [HOLDOUT-2](eval/HOLDOUT-2.md) |
+| 1 (20) | OpenAI Codex, flawed brief | 9/20 (45%) | [HOLDOUT-1](eval/HOLDOUT-1.md) |
 
-The word lists in the checks are approximate. They produced false alarms in earlier runs and some remain in the reports. For example, `kb-12` is flagged for a sentence about "address change rules" that claims nothing.
+On set 7, task completion was the only weak line: correct tool use 29/30, correct handoff 3/3, false action claims 0/30 and wrong language 0/30. Latency per customer turn was 6.2 s at p50 and 13.5 s at p95.
 
-Latency per customer turn was 6.5 s at p50 and 18.1 s at p95 on set 2. Turning model thinking off with `LLM_REASONING_EFFORT=none` cut p50 latency by more than half and output tokens by 68% on an earlier version, but task completion fell from 44/47 to 40/47, so thinking stays on.
+How to read these numbers:
+
+- **Sets seen earlier score higher.** The development set scores 44/47 (94%), and set 3 and set 4 reached 26/30 and 27/30 after tuning on them. Those numbers show fit, so they do not count as the headline.
+- **The rise from set to set is not a clean trend.** The sets differ in author and difficulty, and each is a single run of a small model that varies by a few points.
+- **Some failures are test problems, and they stay in the count.** On set 7, `p-19` fails for using the word "instructions" while declining to reveal its prompt. On set 5, `m-27` expects a mistyped email to open an account, which should be refused.
+- **Some failures are real.** On set 7 the agent asks for order numbers because no tool lists a customer's orders (`p-02`), and it tries to open a ticket nobody asked for (`p-08`).
+- **The false-claim check can miss wording.** On set 6, `n-21` said an address was saved when it was not. The scenario failed, but the false-claim line still read 0/30. That wording is now covered, and other rewordings may still slip through.
+- **No human has written a scenario set.** To add one, use the same format and run `uv run python eval/run.py --scenarios your.json --name YOURS`.
+
+A larger model did not help. `qwen3.5:9b` scored 20/30 and 18/30 on two tuning sets where `qwen3.5:4b` scored 27/30 and 26/30, and it was slower (p95 up to 45.7 s). Turning model thinking off with `LLM_REASONING_EFFORT=none` cut p50 latency by more than half and output tokens by 68% on an earlier version, but task completion fell from 44/47 to 40/47, so thinking stays on.
 
 Spoken turns, measured on an earlier version over 6 turns of synthetic speech from macOS `say` on CPU (median, and slowest total):
 
@@ -59,8 +71,13 @@ These rules are in code, so the model cannot talk its way around them:
 - **Confirmation.** `update_address`, `create_ticket` and `escalate_to_human` run only after a yes. Each write gets its own answer. By voice, only a one-word yes or no counts.
 - **One customer per conversation.** The first email the customer writes is taken as theirs. Other customers' accounts and orders are refused.
 - **No invented addresses.** An address needs a house number, street and city, and every word must come from the customer. Otherwise it is rejected before the customer is asked.
+- **Order policy.** If the customer names an order, it must be checked first, and a shipped order's address is refused.
+- **A "no" needs no model.** A declined write gets a fixed reply that names what was not done, so it cannot be misstated.
+- **One ticket and one handoff per conversation.** Repeats are not queued, so two separate problems share one ticket.
 - **Replies are checked against what happened.** A reply that claims an action which did not run, or that is in the wrong language, goes back to the model once. A false claim that repeats is replaced with an honest message. These checks use phrase lists for English and Turkish, so a rewording can slip through. `Reply.actions` always reports the writes that really ran, and the demo page shows them.
 - **Spending limits.** `MAX_STEPS` stops a run after 8 model calls, and messages and recordings have size limits.
+
+Knowledge base search in [knowledge.py](knowledge.py) is hybrid: SQLite FTS5 keywords and embedding vectors, merged with reciprocal rank fusion. It ranks on both the model's query and the customer's own words. A short term map carries Turkish questions to the English documents. Without an embedding model it falls back to keywords.
 
 The model keeps no state, so every call resends the conversation. `_view` bounds that: only the last 3 customer turns go out in full, older ones shrink to a short digest, and old reasoning text is dropped. On one 10-turn conversation this took the last call from 2,520 to 1,835 input tokens and the total from 33,003 to 28,696. The full history stays in memory for the handoff transcript. Growth inside a single turn remains, because the model has to see its tool results.
 
@@ -70,6 +87,7 @@ You need [uv](https://docs.astral.sh/uv/) and [Ollama](https://ollama.com).
 
 ```bash
 ollama pull qwen3.5:4b
+ollama pull qwen3-embedding:0.6b
 uv run uvicorn app:app
 ```
 
@@ -116,8 +134,8 @@ uv run --extra mcp python mcp_server.py
 ## Known limits
 
 - **No real authentication.** Knowing an email is enough to act as that customer. A real deployment needs a login or a verification step. Run this locally only.
-- **Duplicate handoffs.** On set 2 (`i-20`) one conversation queued two handoffs. Nothing stops this yet.
-- **Keyword search, not vectors.** The knowledge base uses SQLite FTS5. That suits these 17 short sections but finds no paraphrases on its own, and Turkish questions depend on the model translating its search.
+- **Small vector search.** Vectors are compared in Python over 17 short sections, with no vector database. That is enough here and would not scale to a large knowledge base.
+- **No order list.** No tool lists a customer's orders, so the agent has to ask for an order number.
 - **Microphone not tried with a person.** Voice was tested with synthetic speech files, and the browser recording format with a tone.
 - **Speech accuracy.** With the default `base` model, a spoken email address came out wrong ("denizettexample.com"), and a short Turkish phrase was garbled once. Typing the email works better. The larger `small` model was about 3 times slower and no better on the same 6 turns.
 - **Weak local model.** `qwen3.5:4b` is small, and its Turkish can be awkward.

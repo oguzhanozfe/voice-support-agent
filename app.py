@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 import agent
 import crm
+import knowledge
 import voice
 
 MAX_AUDIO_BYTES = 10_000_000
@@ -25,6 +26,7 @@ client = openai.OpenAI(
     timeout=120,
 )
 crm.init_db()
+knowledge.init()
 
 # ponytail: in-memory sessions behind one lock, lost on restart and one request at a time.
 # Enough for a local demo; move to per-session locks and SQLite if this ever serves real traffic.

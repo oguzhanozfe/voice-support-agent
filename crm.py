@@ -1,4 +1,4 @@
-"""Fake CRM and knowledge base on SQLite. Every record here is synthetic."""
+"""Fake CRM on SQLite, which also stores the knowledge base index. Every record is synthetic."""
 import json
 import re
 import sqlite3
@@ -6,7 +6,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 DB_PATH = Path("crm.db")
-KB_DIR = Path(__file__).parent / "kb"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
@@ -24,6 +23,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
     id INTEGER PRIMARY KEY, reason TEXT NOT NULL, summary TEXT NOT NULL, transcript TEXT NOT NULL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS kb USING fts5(source UNINDEXED, title, body, tokenize='porter');
+CREATE TABLE IF NOT EXISTS kb_vectors (source TEXT PRIMARY KEY, vector TEXT NOT NULL);
 """
 
 CUSTOMERS = [
@@ -37,10 +37,6 @@ ORDERS = [
     ("O5003", "C1002", "Desk lamp", "delivered", 34.00),
     ("O5004", "C1003", "Mechanical keyboard", "processing", 120.00),
 ]
-
-
-# Without this, "how long do refunds take" ranks on "how", "long" and "take".
-STOP_WORDS = set("a an and are can do does for how i in is it long many much my of on or take the to what when where why with you your".split())
 
 
 @contextmanager
@@ -60,29 +56,6 @@ def init_db():
         conn.executescript(SCHEMA)
         conn.executemany("INSERT OR IGNORE INTO customers VALUES (?, ?, ?, ?)", CUSTOMERS)
         conn.executemany("INSERT OR IGNORE INTO orders VALUES (?, ?, ?, ?, ?)", ORDERS)
-        conn.execute("DELETE FROM kb")
-        conn.executemany("INSERT INTO kb VALUES (?, ?, ?)", _kb_sections())
-
-
-def _kb_sections():
-    for path in sorted(KB_DIR.glob("*.md")):
-        for section in path.read_text(encoding="utf-8").split("\n## ")[1:]:
-            title, _, body = section.partition("\n")
-            yield f"{path.name}: {title.strip()}", title.strip(), body.strip()
-
-
-def search_kb(query):
-    # Quote every word so customer text cannot be read as FTS5 query syntax.
-    words = re.findall(r"\w+", query)
-    if not words:
-        raise ValueError("Search query must contain words")
-    words = [w for w in words if w.lower() not in STOP_WORDS] or words
-    match = " OR ".join(f'"{w}"' for w in words)
-    with _db() as conn:
-        rows = conn.execute(
-            "SELECT source, body FROM kb WHERE kb MATCH ? ORDER BY bm25(kb, 0, 5, 1) LIMIT 3", (match,)
-        ).fetchall()
-    return [{"cite": f"[{r['source']}]", "text": r["body"]} for r in rows]
 
 
 def get_customer(email):

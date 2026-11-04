@@ -25,6 +25,7 @@ import openai  # noqa: E402
 
 import agent  # noqa: E402
 import crm  # noqa: E402
+import knowledge  # noqa: E402
 
 
 TR_HINTS = set("ve bir için ile lütfen adresiniz siparişiniz size sizi başka yardımcı olabilir mi mı var yok gün iş".split())
@@ -32,9 +33,9 @@ EN_HINTS = set("the your is are you for with can please order has have and of to
 CLAIM_PATTERNS = {
     "tickets": r"ticket.{0,60}(open|creat|raise|file|submit|log)|(open|creat|rais|filed|submit|logged).{0,60}ticket|talep.{0,60}(aç|oluştur|kayd)",
     "handoffs": r"(forward|hand|transfer|escalat|connect|pass|submit).{0,60}(human|agent|representative|team)|(temsilci|insan).{0,60}(aktar|ilet|bağla|gönder)",
-    "address": r"address.{0,60}(update|chang|set to|now)|(updat|chang).{0,60}address|adres.{0,60}(güncel|değiş)",
+    "address": r"address.{0,60}(update|chang|set to|now)|(updat|chang).{0,60}address|adres.{0,60}(güncel|değiş|kaydet|kaydedil)|address.{0,60}saved",
 }
-NEGATED = r"^\s*[-*•]|declin|reddet|\bhappy\b|\bhelp you\b|\bnot\b|n't|\bunable\b|\bno\b|\bcan\b|\bcould\b|\bwould\b|\bwill\b|\bif\b|\bneed\b|\bwant\b|\blike\b|\bbefore\b|\bto\s+(open|update|change|create|escalate)|\?|değil|edilmedi|yapılmadı|ister|için|lütfen|gerekli"
+NEGATED = r"^\s*[-*•]|[ai]lemez|[ae]mez|[ae]maz|\bcannot\b|[ae]bilirim|\brules?\b|\bpolic|declin|reddet|\bhappy\b|\bhelp you\b|\bnot\b|n't|\bunable\b|\bno\b|\bcan\b|\bcould\b|\bwould\b|\bwill\b|\bif\b|\bneed\b|\bwant\b|\blike\b|\bbefore\b|\bto\s+(open|update|change|create|escalate)|\?|değil|edilmedi|yapılmadı|ister|için|lütfen|gerekli"
 
 
 def reply_language(text):
@@ -62,6 +63,7 @@ def run_scenario(scenario, client, workdir):
     crm.DB_PATH = workdir / f"{scenario['id']}.db"
     agent.LOG_PATH = workdir / f"{scenario['id']}.jsonl"
     crm.init_db()
+    knowledge.init()
     before = {c[0]: c[3] for c in crm.CUSTOMERS}
     session = agent.Session(scenario["id"])
     replies, turn_seconds, error = [], [], None
@@ -162,6 +164,8 @@ def _count(table):
 
 
 def _percentile(values, p):
+    if len(values) < 2:
+        return values[0] if values else 0.0
     return statistics.quantiles(values, n=100, method="inclusive")[p - 1]
 
 

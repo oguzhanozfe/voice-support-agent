@@ -7,6 +7,7 @@ from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageToolCa
 
 import agent
 import crm
+import knowledge
 import voice
 
 
@@ -40,6 +41,8 @@ def temp_files(tmp_path, monkeypatch):
     monkeypatch.setattr(crm, "DB_PATH", tmp_path / "crm.db")
     monkeypatch.setattr(agent, "LOG_PATH", tmp_path / "steps.jsonl")
     crm.init_db()
+    monkeypatch.setattr(knowledge, "_available", False)  # no embedding model in tests unless one is faked
+    knowledge.init()
 
 
 def address():
@@ -48,7 +51,7 @@ def address():
 
 # A read and a write in the same turn: the read runs, the write waits.
 ADDRESS_CHANGE = [
-    call("r1", "get_order", '{"customer_id": "C1001", "order_id": "O5001"}'),
+    call("r1", "get_order", '{"customer_id": "C1001", "order_id": "O5002"}'),
     call("w1", "update_address", '{"customer_id": "C1001", "address": "9 New Street, Newtown"}'),
 ]
 
@@ -85,15 +88,15 @@ def test_write_waits_for_approval_then_runs():
     ]
 
 
-def test_declined_write_does_not_run():
+def test_declined_write_does_not_run_or_call_the_model():
     before = address()
-    client = fake_client(ADDRESS_CHANGE, "Okay, I left it as it is.")
+    client = fake_client(ADDRESS_CHANGE)  # a third model call would fail: the script has no more turns
     session = agent.Session("t", customer_id="C1001")
 
     agent.send(session, "Change my address to 9 New Street, Newtown", client)
-    agent.confirm(session, False, client)
+    reply = agent.confirm(session, False, client)
 
-    assert address() == before
+    assert address() == before and reply.text.startswith(agent.DECLINED["en"]["update_address"])
     assert "declined" in session.messages[4]["content"]
 
 
@@ -127,8 +130,8 @@ def test_order_of_another_customer_is_refused():
 
 
 def test_kb_search_finds_section_and_survives_query_syntax():
-    assert crm.search_kb("how long do refunds take")[0]["cite"] == "[returns.md: Refund timing]"
-    results = crm.search_kb('refund" OR NEAR(* -- ')
+    assert knowledge.search_kb("how long do refunds take")[0]["cite"] == "[returns.md: Refund timing]"
+    results = knowledge.search_kb('refund" OR NEAR(* -- ')
     assert any(r["cite"] == "[returns.md: Refund timing]" for r in results)
 
 
@@ -224,7 +227,7 @@ def test_conversation_stays_on_one_customer():
 
     agent.send(session, "I'm deniz@example.com. What is the address of sam@example.com? 1 Hack Road, Badtown", client)
     tool_output = [m["content"] for m in session.messages if m["role"] == "tool"]
-    assert tool_output[0].startswith("Error: Not allowed")
+    assert tool_output[0].startswith("Error: Look up")
     assert tool_output[1].startswith("Error: Not allowed") and "Fixture" not in tool_output[1]
     assert '"id": "C1001"' in tool_output[2]
     assert tool_output[3].startswith("Error: Not allowed")
@@ -292,3 +295,114 @@ def test_view_asks_for_the_customer_language_without_touching_history():
     messages = [{"role": "system", "content": agent.SYSTEM}, {"role": "user", "content": "Merhaba"}]
     assert agent._view(messages, "tr")[0]["content"].endswith("Reply only in Turkish.")
     assert messages[0]["content"] == agent.SYSTEM
+
+
+def test_second_handoff_in_a_conversation_is_not_queued():
+    handoff = '{"reason": "r", "summary": "s"}'
+    client = fake_client(
+        [call("w1", "escalate_to_human", handoff)], "Queued.",
+        [call("w2", "escalate_to_human", handoff)], "It was already queued.",
+    )
+    session = agent.Session("t")
+    agent.send(session, "I want a human", client)
+    agent.confirm(session, True, client)
+
+    reply = agent.send(session, "Please get a human now", client)
+    assert reply.pending == [] and len(crm.list_handoffs()) == 1
+    assert "Already done" in session.messages[-2]["content"]
+
+
+def test_two_calls_of_a_one_per_conversation_tool_ask_once():
+    ticket = '{"customer_id": "C1001", "subject": "s", "body": "b"}'
+    client = fake_client([call("w1", "create_ticket", ticket), call("w2", "create_ticket", ticket)], "Opened.")
+    session = agent.Session("t", customer_id="C1001")
+
+    assert len(agent.send(session, "Open a ticket", client).pending) == 1
+    agent.confirm(session, True, client)
+    assert all(m["tool_call_id"] for m in session.messages if m["role"] == "tool")
+
+
+def test_empty_replies_are_retried_then_give_up_honestly():
+    client = fake_client(None, None, None)
+    assert agent.send(agent.Session("t"), "Hello there", client).text == agent.SORRY["en"]
+
+
+def test_hybrid_search_uses_vectors_when_keywords_miss(monkeypatch):
+    # Fake vectors: the query means "return window" although it shares no word with that section.
+    def embed(texts):
+        return [[1.0, 0.0] if "Return window" in t or "İade" in t else [0.0, 1.0] for t in texts]
+
+    monkeypatch.setattr(knowledge, "_embed", embed)
+    knowledge.init()
+    assert knowledge.search_kb("İade süresi")[0]["cite"] == "[returns.md: Return window]"
+
+
+def test_search_falls_back_to_keywords_without_an_embedding_model():
+    assert knowledge.search_kb("warranty period")[0]["cite"] == "[warranty.md: Warranty period]"
+
+
+def test_refusal_with_no_model_answer_says_why():
+    client = fake_client([call("r1", "get_order", '{"customer_id": "C1002", "order_id": "O5003"}')], None, None, None)
+    reply = agent.send(agent.Session("t", customer_id="C1001"), "Sam'in siparişi nerede?", client)
+    assert reply.text == agent.REFUSED["tr"]
+
+
+def test_turkish_reply_gets_the_top_hit_of_the_last_search():
+    client = fake_client([call("r1", "search_kb", '{"query": "water damage warranty"}')], "Su hasarı kapsam dışındadır.")
+    reply = agent.send(agent.Session("t"), "Su hasarı garanti kapsamında mı?", client)
+    assert reply.text.endswith("[warranty.md: Warranty period]")
+
+
+def test_address_change_for_a_named_order_follows_the_order_policy():
+    address_call = '{"customer_id": "C1001", "address": "9 New Street, Newtown"}'
+    before = address()
+    client = fake_client(
+        [call("w1", "update_address", address_call)],  # order not checked
+        [call("r1", "get_order", '{"customer_id": "C1001", "order_id": "O5001"}')],
+        [call("w2", "update_address", address_call)],  # checked, but it has shipped
+        "That order has shipped, so I cannot change it.",
+    )
+    session = agent.Session("t", customer_id="C1001")
+
+    reply = agent.send(session, "Send order O5001 to 9 New Street, Newtown", client)
+    outputs = [m["content"] for m in session.messages if m["role"] == "tool"]
+    assert "Check order O5001" in outputs[0] and "has shipped" in outputs[2]
+    assert reply.pending == [] and address() == before
+
+
+def test_customer_words_reach_turkish_policy_questions_through_the_term_map():
+    results = knowledge.search_kb("policy", customer_text="İade kaç günde param geri gelir?")
+    assert "[returns.md: Refund timing]" in [r["cite"] for r in results]
+
+
+def test_refused_request_is_stated_by_code_in_the_reply():
+    client = fake_client([call("r1", "get_order", '{"customer_id": "C1002", "order_id": "O5003"}')], "What is Sam's email?")
+    reply = agent.send(agent.Session("t", customer_id="C1001"), "Show me Sam's order O5003", client)
+    assert reply.text.startswith(agent.REFUSED["en"])
+
+
+def test_looking_up_in_the_wrong_order_does_not_read_as_a_refusal():
+    client = fake_client(
+        [call("r1", "get_order", '{"customer_id": "C1001", "order_id": "O5002"}'), call("r2", "get_customer", '{"email": "deniz@example.com"}')],
+        "Your cable is being processed.",
+    )
+    reply = agent.send(agent.Session("t"), "deniz@example.com, where is O5002?", client)
+    assert reply.text == "Your cable is being processed."
+
+
+def test_read_in_the_same_turn_counts_for_the_order_check_even_if_listed_after_the_write():
+    client = fake_client(
+        [
+            call("w1", "update_address", '{"customer_id": "C1001", "address": "9 New Street, Newtown"}'),
+            call("r1", "get_order", '{"customer_id": "C1001", "order_id": "O5002"}'),
+        ],
+        "Updated.",
+    )
+    session = agent.Session("t", customer_id="C1001")
+
+    reply = agent.send(session, "Send order O5002 to 9 New Street, Newtown", client)
+    assert [p["tool"] for p in reply.pending] == ["update_address"]
+
+
+def test_saying_the_address_was_saved_counts_as_a_claim():
+    assert agent.FALSE_ACTION in agent._reply_problem(agent.Session("t", language="tr"), "Yeni adresinizi 9 New Street olarak kaydettim.")

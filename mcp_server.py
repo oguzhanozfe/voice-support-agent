@@ -6,10 +6,12 @@ Here the MCP host owns the loop, so its tool approval is the human gate for the 
 from functools import wraps
 
 import crm
+import knowledge
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 crm.init_db()
+knowledge.init()
 server = MCPServer("support-crm")
 
 
@@ -29,7 +31,7 @@ def tool(function):
 @tool
 def search_kb(query: str) -> list[dict]:
     """Search the store's policies. Each result has a cite value to quote."""
-    return crm.search_kb(query)
+    return knowledge.search_kb(query)
 
 
 @tool
