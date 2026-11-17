@@ -78,7 +78,7 @@ def get_order(customer_id, order_id):
 
 
 def check_address(address):
-    # ponytail: a shape check, not real validation. A postal address API would replace it.
+    # Limitation: a shape check, not real validation. A postal address API would replace it.
     street, _, city = address.partition(",")
     if not (re.search(r"\d", street) and len(street.split()) >= 2 and city.strip()):
         raise ValueError("Address is incomplete: ask the customer for the street, house number and city")

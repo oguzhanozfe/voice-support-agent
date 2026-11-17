@@ -134,7 +134,7 @@ uv run --extra mcp python mcp_server.py
 ## Known limits
 
 - **No real authentication.** Knowing an email is enough to act as that customer. A real deployment needs a login or a verification step. Run this locally only.
-- **Small vector search.** Vectors are compared in Python over 17 short sections, with no vector database. That is enough here and would not scale to a large knowledge base.
+- **Small vector search.** Vectors are compared in Python over 15 short sections, with no vector database. That is enough here and would not scale to a large knowledge base.
 - **No order list.** No tool lists a customer's orders, so the agent has to ask for an order number.
 - **Microphone not tried with a person.** Voice was tested with synthetic speech files, and the browser recording format with a tone.
 - **Speech accuracy.** With the default `base` model, a spoken email address came out wrong ("denizettexample.com"), and a short Turkish phrase was garbled once. Typing the email works better. The larger `small` model was about 3 times slower and no better on the same 6 turns.

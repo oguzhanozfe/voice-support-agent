@@ -17,7 +17,7 @@ RRF_K = 60  # standard reciprocal rank fusion constant
 STOP_WORDS = set("a an and are can do does for how i in is it long many much my of on or take the to what when where why with you your".split())
 
 # The documents are English. A customer's Turkish words reach them through this short map.
-# ponytail: a hand list for this store's topics. Translated documents would replace it.
+# Limitation: a hand list for this store's topics. Translated documents would replace it.
 TR_TERMS = {
     "iade": "return refund", "iadeyi": "return refund", "iadesi": "refund return", "param": "refund", "kripto": "cryptocurrency payment", "kapıda": "cash delivery payment", "kargo": "shipping delivery",
     "paket": "parcel delivery", "teslimat": "delivery", "garanti": "warranty", "garantisi": "warranty", "fatura": "invoice",

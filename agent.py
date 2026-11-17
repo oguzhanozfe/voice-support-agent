@@ -246,7 +246,7 @@ def _run(session, client):
                 _execute(session, call)
                 continue
             if call.function.name in session.opened or any(c.function.name == call.function.name for c in session.pending):
-                # ponytail: one ticket and one handoff per conversation. Two separate problems share a ticket.
+                # Limitation: one ticket and one handoff per conversation. Two separate problems share a ticket.
                 earlier = session.opened.get(call.function.name, "waiting for the customer's confirmation")
                 _result(session, "tool_duplicate", call, f"Already done in this conversation, not repeated: {earlier}")
                 continue
@@ -278,7 +278,7 @@ def _with_refusal(session, text):
 
 
 def _with_source(session, text):
-    # ponytail: measured models forgot or mangled citations, so code adds the source. English
+    # Limitation: measured models forgot or mangled citations, so code adds the source. English
     # replies get the result sharing the most words with them, which is evidence, not proof.
     # Turkish replies share few words with the English documents, so they get the top search hit.
     if not session.hits:
@@ -361,7 +361,7 @@ def _check_customer(session, args):
 def _check_speaker(session, args):
     # The first email the customer wrote is taken as their own, so "I'm deniz@..., what is
     # sam@...'s address?" cannot look up Sam, in whichever order the model tries them.
-    # ponytail: an email is a claim, not a proof. Real use needs a login or a verification code.
+    # Limitation: an email is a claim, not a proof. Real use needs a login or a verification code.
     emails = re.findall(r"[\w.+-]+@[\w.-]+\.\w+", " ".join(m["content"] for m in session.messages if m["role"] == "user"))
     if emails and str(args.get("email", "")).strip().casefold() != emails[0].casefold():
         raise ValueError("Not allowed: only the speaking customer's own account can be looked up")
@@ -402,7 +402,7 @@ def _language(text):
 
 
 def _reply_problem(session, text):
-    # ponytail: phrase lists for two languages, so they miss rewordings. eval/run.py checks
+    # Limitation: phrase lists for two languages, so they miss rewordings. eval/run.py checks
     # replies with its own wider list, and Reply.actions always shows the truth in the UI.
     for tool, pattern in CLAIMS.items():
         if tool in session.done:

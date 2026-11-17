@@ -28,7 +28,7 @@ client = openai.OpenAI(
 crm.init_db()
 knowledge.init()
 
-# ponytail: in-memory sessions behind one lock, lost on restart and one request at a time.
+# Limitation: in-memory sessions behind one lock, lost on restart and one request at a time.
 # Enough for a local demo; move to per-session locks and SQLite if this ever serves real traffic.
 sessions: dict[str, agent.Session] = {}
 lock = threading.Lock()
